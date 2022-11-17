@@ -3,8 +3,7 @@ R code for the publication: Associations of polygenic risk scores for preeclamps
 with hypertensive disorders of pregnancy
 https://doi.org/10.1097/HJH.0000000000003336
 
-PRS values were calculuted using PRS-CS pipeline with default settings: https://github.com/getian107/PRScs
-Calculations were performed at6 the FinnGen PRS pipeline: https://github.com/FINNGEN/CS-PRS-pipeline
+PRS values were calculuted using PRS-CS pipeline with default settings: https://github.com/getian107/PRScs. Calculations were performed at the FinnGen PRS pipeline: https://github.com/FINNGEN/CS-PRS-pipeline
 
 ```
 ht_prs_preg
