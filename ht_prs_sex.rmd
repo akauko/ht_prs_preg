@@ -1,0 +1,1189 @@
+---
+title: "Sex differences in blood pressure polygenic risk scores"
+editor_options:
+  chunk_output_type: console
+output:
+  html_document:
+    number_sections: true
+---
+
+```{r setup}
+packrat::init()
+
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message=FALSE)
+```
+
+
+**Libraries**
+
+
+```{r libraries}
+
+packrat::on()
+library(tidyverse)
+library(survival)   # survival analysis
+library(data.table) # fread() function
+library(gridExtra)  # plots to grid
+library(survminer)  # ggbased visualization and extra diagnostics
+library(survRM2)    # restricted mean survival times
+library(visdat)     # visualization of tibble and na's
+library(forestplot) # forestplot
+library(kableExtra) # pretty tables
+
+#install.packages("kableExtra_1.2.1.tar.gz", repos=NULL, type="source")
+#install.packages("webshot_0.5.2.tar.gz", repos=NULL, type="source")
+#install.packages("knitr_1.29.tar.gz", repos=NULL, type="source")
+#install.packages("plotrix_3.8-1.tar.gz", repos=NULL, type="source")
+
+
+source('/finngen/red/ht_prs/sex/Functions.R')
+
+setwd("/home/ivm/red/ht_prs/sex")
+```
+
+
+# Data
+
+**Risk scores**
+
+Calculated from UK Biobank (UKB) for Finngen Data Freeze 5 individuals using the PRS-CS18 pipeline with default parameters.
+
+
+**Endpoints**
+
+* I9_HYPTENS: Hypertension
+* I9_CHD: Major coronary heart disease event
+
+**Copying and preprocessing data**
+
+Endpoint and covariate files transfered and unzipped. Columns selected from endpoint file prior to import to r. There was not enough memory to upload full files to R. 
+
+
+```{bash, eval=F}
+
+#Endpoint file and covariate file copied and unzipped
+
+cp /finngen/library-red/finngen_R5/phenotype_2.0/data/finngen_R5_V2_endpoint.gz /finngen/red/ht_prs/data/
+cp /finngen/library-red/finngen_R5/phenotype_2.0/data/R5_cov_pheno_1.0.txt.gz /finngen/red/ht_prs/data/  
+
+gzip -d /finngen/red/ht_prs/data/finngen_R5_V2_endpoint.gz
+gzip -d /finngen/red/ht_prs/data/R5_cov_pheno_1.0.txt.gz
+
+#Self written perl-script to extract columns from phenotype file
+perl select_columns.pl data/finngen_R5_V2_endpoint data/finngen_R5_V2_HTCVD FINNGENID I9_HYPTENS I9_HYPTENS_AGE I9_CVD_HARD I9_CVD_HARD_AGE I9_CHD I9_CHD_AGE I9_STR I9_STR_AGE FU_END_AGE
+
+#This could be loaded directly to R, but now loading will be faster...
+perl select_columns.pl data/R5_cov_pheno_1.0.txt data/R5_cov_pheno_selected FINNGENID batch BL_YEAR cohort SEX_IMPUTED PC1 PC2 PC3 PC4 PC5 PC6 PC7 PC8 PC9 PC10
+
+```
+
+
+**Loading data**
+
+```{r load}
+
+endpoints <- fread("/finngen/red/ht_prs/data/finngen_R5_V2_HTCVD", sep = "\t") 
+
+sbp_prs_f <- fread("/finngen/red/ukb-bp-prs/ukb-sbp-female.profile") %>%
+  select(IID, SCORE) %>%
+  rename(SBP_F_SCORE=SCORE)
+
+sbp_prs_m <- fread("/finngen/red/ukb-bp-prs/ukb-sbp-male.profile") %>%
+  select(IID, SCORE) %>%
+  rename(SBP_M_SCORE=SCORE)
+
+sbp_prs_both <- fread("/finngen/red/ukb-bp-prs/ukb-sbp-both.profile") %>%
+  select(IID, SCORE) %>%
+  rename(SBP_SCORE_ALL=SCORE)
+
+covs <- fread("/finngen/red/ht_prs/data/R5_cov_pheno_selected")
+
+```
+
+
+**Combining data**
+
+
+```{r combine}
+df <- endpoints %>%
+  left_join(sbp_prs_f,    by = c("FINNGENID" = "IID")) %>%
+  left_join(sbp_prs_m,    by = c("FINNGENID" = "IID")) %>%
+  left_join(sbp_prs_both, by = c("FINNGENID" = "IID")) %>%
+  left_join(covs, by = c("FINNGENID" = "FINNGENID")) 
+ 
+#Removing cases without genetic information and some other preprocessing
+#...and creating combined PRS score
+
+df <- df %>%
+  filter(!is.na(batch)) %>%  
+  mutate_at(c("batch","cohort"),as.factor) %>%
+  mutate(SBP_SCORE = if_else(as.logical(SEX_IMPUTED),SBP_F_SCORE, SBP_M_SCORE)) #%>%
+ # mutate(SBP_SCALED_ALL = scale(SBP_SCORE_ALL))
+
+dim(df)
+
+```
+
+
+**Dividing to late and early hypertension**
+
+
+```{r early vs late}
+
+df <- df %>%  
+  mutate(HT_EARLY = if_else(I9_HYPTENS_AGE >= 55, as.integer(0), I9_HYPTENS),
+         HT_LATE  = if_else(I9_HYPTENS_AGE <  55,  as.integer(0), I9_HYPTENS),
+         AGE_CAT  = if_else(I9_HYPTENS_AGE <  55, 1,2))
+
+df <- df %>%  
+  mutate(CHD_EARLY = if_else(I9_CHD_AGE >= 55, as.integer(0), I9_CHD),
+         CHD_LATE  = if_else(I9_CHD_AGE <  55,  as.integer(0), I9_CHD))
+
+```
+
+
+**Separate dataset by gender**
+
+```{r by gender}
+df_m <-  df %>%   filter(SEX_IMPUTED==0)
+df_f <-  df %>%   filter(SEX_IMPUTED==1)
+
+```
+
+
+**Categorical variables & sex**
+
+Data is categorized and scaled separately for both genders.
+
+```{r scaling and categorizing, R.options = list(width = 120) }
+
+#Let's add parametric versions of the scores
+my_probs = c(0,0.025,0.2,0.8,0.975,1)
+my_catergories =  c("<2.5%","2.5-20%","20-80%","80-97.5%",">97.5%")
+
+
+#df_f & female scores
+df_f <- df_f %>%  
+  mutate(
+    SBP_SCALED = scale(SBP_SCORE)[,1], 
+    SBP_CAT = cut(SBP_SCORE, breaks=quantile(df_f$SBP_F_SCORE, probs = my_probs), 
+                         labels=my_catergories, include.lowest = T))
+
+#df_m & male scores
+df_m <- df_m %>%  
+  mutate(
+    SBP_SCALED = scale(SBP_SCORE)[,1], 
+    SBP_CAT = cut(SBP_SCORE, breaks=quantile(df_m$SBP_M_SCORE, probs = my_probs), 
+                    labels=my_catergories, include.lowest = T))
+
+
+
+##Here we add the new separately calculated columns also to original dataframe.
+df <- bind_rows(df_f, df_m) %>%
+  select(FINNGENID, SBP_SCALED, SBP_CAT) %>%
+  right_join(df, by="FINNGENID")
+
+
+dim(df)
+dim(df_f)
+dim(df_m)
+
+```
+
+
+#Let's create new dataframe for tables with 20-80% as reference. Needed for some tables
+
+```{r new reference}
+
+
+df_fr <- df_f %>%
+  mutate(SBP_CAT = relevel(SBP_CAT, ref = "20-80%"))
+
+df_mr <- df_m %>%
+  mutate(SBP_CAT = relevel(SBP_CAT, ref = "20-80%"))
+
+df_r <- df %>%
+  mutate(SBP_CAT = relevel(SBP_CAT, ref = "20-80%"))
+
+
+```
+
+
+**Properties of variables **
+
+
+```{r descriptive, R.options = list(width = 120) }
+
+#Number individuals, females and males, fraction of hypertensive patients
+
+dim(df)
+
+df$SEX_IMPUTED %>%
+  mean()
+
+df %>% 
+  group_by(SEX_IMPUTED) %>%
+  summarize(n=n(), fract_HT = mean(I9_HYPTENS, na.rm=T))
+
+sum(df_f$I9_HYPTENS, na.rm=T)
+sum(df_m$I9_HYPTENS, na.rm=T)
+
+
+#Average ages for HT in each riskgroup
+
+df %>%
+  mutate(HYPTENS_AGE_NA_F = if_else(I9_HYPTENS == 1 & SEX_IMPUTED == 1, I9_HYPTENS_AGE, NA_real_),
+         HYPTENS_AGE_NA_M = if_else(I9_HYPTENS == 1 & SEX_IMPUTED == 0, I9_HYPTENS_AGE, NA_real_)) %>%
+  group_by(SBP_CAT)%>%
+  summarise_at(c("HYPTENS_AGE_NA_F","HYPTENS_AGE_NA_M"), mean, na.rm=T) %>% 
+    rename(HT_AGE_F = HYPTENS_AGE_NA_F, HT_AGE_M = HYPTENS_AGE_NA_M) %>%
+  ungroup() %>%
+  kable(digits = 1) %>% kable_styling(full_width = F)
+
+
+
+#Age at the end of followup
+
+summary(df$FU_END_AGE)
+sd(df$FU_END_AGE)
+
+
+```    
+
+
+
+<details><summary>**Visualisations on data**</summary>
+
+
+```{r descriptive2, R.options = list(width = 120) }
+
+#5000 random observations
+df %>% 
+  sample_n(5000) %>%
+  vis_dat()
+
+#Risk scores
+
+df_tmp_f <- df_f %>% select(I9_HYPTENS_AGE, I9_HYPTENS, SBP_SCALED, SBP_CAT)
+summary(df_tmp_f)
+
+
+df_tmp_m <- df_m %>% select(I9_HYPTENS_AGE, I9_HYPTENS, SBP_SCALED, SBP_CAT)
+summary(df_tmp_m)
+
+par(mfrow=c(1,2))
+hist(df_f$SBP_SCORE)
+hist(df_m$SBP_SCORE)
+par(mfrow=c(1,1))
+
+par(mfrow=c(1,2))
+hist(df_f$SBP_SCALED)
+hist(df_m$SBP_SCALED)
+
+par(mfrow=c(1,1))
+
+#Visualisation of endpoints
+
+ggplot(df, aes(x=I9_HYPTENS_AGE, color=as.factor(I9_HYPTENS), fill=as.factor(I9_HYPTENS))) +
+    geom_histogram(alpha=0.4) +
+    theme(legend.title = element_blank()) +
+    facet_wrap(~SEX_IMPUTED, ncol=2)
+
+
+```
+
+</details>
+<br>
+
+
+
+# BP PRSs and hypertension
+
+
+## Proportional hazard assumption: log log curve
+
+
+**Model by survfit**
+
+
+```{r km survfit}
+
+km.sbp.f <- survfit(Surv(I9_HYPTENS_AGE, I9_HYPTENS) ~ SBP_CAT, data=df_f)
+#print(km.sbp)
+km.sbp.m <- survfit(Surv(I9_HYPTENS_AGE, I9_HYPTENS) ~ SBP_CAT, data=df_m)
+#print(km.sbp)
+
+```
+
+
+**KM plot**
+
+
+```{r km plot, fig.width=10, fig.height=4}
+
+
+p.f <- my_ggkmplot(km.sbp.f, "HT vs. SBP score")
+p.m <- my_ggkmplot(km.sbp.m, "HT vs. DBP score")
+
+splots <- arrange_ggsurvplots(list(p.f, p.m), 
+                            nrow = 1, ncol = 2, 
+                            title = "Kaplan Meier curve")
+
+ggsave(file = "km_ht_prs.png", plot = splots, height = 4, width = 10, dpi = 150)
+
+
+```
+
+
+**log log curve**
+
+
+```{r log log, fig.width=10, fig.height=5}
+
+cols= c("skyblue", "blue", "black", "red", "salmon")
+labels= c("<2.5%","2.5-20%","20-80%","80-97.5%",">97.5%")
+
+par(mfrow=c(1,2))
+
+plot(km.sbp.f, fun="cloglog", xlim=c(20,100), main="SBP female: log log", xlab="Age", col = cols)
+plot(km.sbp.m, fun="cloglog", xlim=c(20,100), main="SBP male: log log", xlab="Age", col = cols)
+
+par(mfrow=c(1,1))
+
+```
+
+These look parallel enough. We can use cox model.
+
+
+## Cox model: covariate adjusted, continuous score
+
+
+
+**Running models**
+
+
+```{r model continuous score}
+#Fitting cox for females
+cx.sbp.cs.f <- coxph(Surv(I9_HYPTENS_AGE, I9_HYPTENS) ~ SBP_SCALED + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df_f)
+
+#Fitting cox for males
+cx.sbp.cs.m <- coxph(Surv(I9_HYPTENS_AGE, I9_HYPTENS) ~ SBP_SCALED + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df_m)
+
+#Both
+#cx.sbp.cs.b <- coxph(Surv(I9_HYPTENS_AGE, I9_HYPTENS) ~ SBP_SCALED_ALL + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df)
+
+```
+
+
+**Table: Hazard rations:**
+
+
+```{r HRs continuous score}
+
+my_hr_table_cont2(list(cx.sbp.cs.f, cx.sbp.cs.m, cx.sbp.cs.b), c("SBP female", "SBP male", "SBP both")) %>%
+  kable() %>%
+  kable_styling(full_width =  F)
+
+```
+
+
+
+<details><summary>**All coefficients**</summary>
+
+
+```{r all coefs continuous}
+
+summary(cx.sbp.cs.f)
+summary(cx.sbp.cs.m)
+summary(cx.sbp.cs.b)
+
+```
+
+
+</details>
+<br>
+
+
+
+
+## Cox model: adjusted, continuous, by age
+
+**Running the model:**
+
+*Female*
+
+```{r female continuous by age}
+#Young
+cx.sbp.cs.y.f <- coxph(Surv(I9_HYPTENS_AGE, HT_EARLY) 
+                       ~ SBP_SCALED + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df_f)
+
+#Old
+cx.sbp.cs.o.f <- coxph(Surv(I9_HYPTENS_AGE, HT_LATE) 
+                       ~ SBP_SCALED + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df_f)
+
+```
+
+*Male*
+
+```{r male continuous by age}
+#Young
+cx.sbp.cs.y.m <- coxph(Surv(I9_HYPTENS_AGE, HT_EARLY) 
+                       ~ SBP_SCALED + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df_m)
+
+#Old
+cx.sbp.cs.o.m <- coxph(Surv(I9_HYPTENS_AGE, HT_LATE) 
+                       ~ SBP_SCALED + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df_m)
+
+```
+
+
+
+
+**Hazard ratios**
+
+
+```{r HRs continuous by age}
+
+my_hr_table_cont2(list(cx.sbp.cs.y.f, cx.sbp.cs.o.f, cx.sbp.cs.y.m,  cx.sbp.cs.o.m), 
+                  c("Early female", "Late female", "Early male", "Late male")) %>%
+  kable()%>%
+  kable_styling(full_width =  F)
+
+
+```
+
+
+
+**Interaction term**
+
+We will check if differences between genders is statistically different by examing the interaction term.
+
+
+```{r interactions continuous score}
+
+#All ages
+cx.sbp.cs.i <- coxph(Surv(I9_HYPTENS_AGE, I9_HYPTENS) ~ SBP_SCALED*SEX_IMPUTED
+                  + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df_r)
+
+#Early
+cx.sbp.cs.y.i <- coxph(Surv(I9_HYPTENS_AGE, HT_EARLY) ~ SBP_SCALED*SEX_IMPUTED
+                  + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df_r)
+
+#Late
+cx.sbp.cs.o.i <- coxph(Surv(I9_HYPTENS_AGE, HT_LATE) ~ SBP_SCALED*SEX_IMPUTED
+                  + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df_r)
+
+
+rbind(my_extr_coef(cx.sbp.cs.i, "All", ":SEX"), 
+        my_extr_coef(cx.sbp.cs.y.i, "Early", ":SEX"),
+        my_extr_coef(cx.sbp.cs.o.i, "Late", ":SEX")) %>%
+  my_tidy_table() %>%
+  kable(full_width =  F) %>%
+  kable_styling()
+
+```
+  
+Interaction terms are statistically significant.
+
+
+
+
+## Cox model: covariate adjusted, categorized score
+
+We will run divide data by gender and by age
+
+
+**Running models**
+
+*Female*
+
+```{r model categorized score female}
+
+#All ages
+cx.sbp.f <- coxph(Surv(I9_HYPTENS_AGE, I9_HYPTENS) ~ SBP_CAT 
+                  + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df_fr)
+
+#Young
+cx.sbp.y.f <- coxph(Surv(I9_HYPTENS_AGE, HT_EARLY) ~ SBP_CAT 
+                    + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df_fr)
+
+#Old
+cx.sbp.o.f <- coxph(Surv(I9_HYPTENS_AGE, HT_LATE) ~ SBP_CAT 
+                    + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df_fr)
+
+```
+
+*Male*
+
+```{r model categorized score male}
+#All ages
+cx.sbp.m <- coxph(Surv(I9_HYPTENS_AGE, I9_HYPTENS) ~ SBP_CAT 
+                  + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df_mr)
+
+#Young
+cx.sbp.y.m <- coxph(Surv(I9_HYPTENS_AGE, HT_EARLY) ~ SBP_CAT 
+                    + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df_mr)
+
+#Old
+cx.sbp.o.m <- coxph(Surv(I9_HYPTENS_AGE, HT_LATE) ~ SBP_CAT 
+                    + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df_mr)
+
+```
+  
+
+**Interaction term**
+
+We will check if differences between genders is statistically different by examing the interaction term.
+
+
+```{r interaction categorized score}
+
+#All ages
+cx.sbp.i <- coxph(Surv(I9_HYPTENS_AGE, I9_HYPTENS) ~ SBP_CAT*SEX_IMPUTED
+                  + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df_r)
+
+#All ages
+cx.sbp.y.i <- coxph(Surv(I9_HYPTENS_AGE, HT_EARLY) ~ SBP_CAT*SEX_IMPUTED
+                  + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df_r)
+
+#All ages
+cx.sbp.o.i <- coxph(Surv(I9_HYPTENS_AGE, HT_LATE) ~ SBP_CAT*SEX_IMPUTED
+                  + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df_r)
+
+
+int_table <- 
+  my_extr_coef(cx.sbp.i, "", ":SEX") %>%
+  my_tidy_table() %>%
+  select(-name) %>%
+  kable() %>%
+  kable_styling(full_width =  F)
+
+```
+  
+Interaction terms are statistically significant.
+
+
+**Table: Hazard ratios:**
+
+
+```{r HRs categorized score}
+
+table.hr.f <- 
+  my_hr_table3_notitle(cx.sbp.f, cx.sbp.y.f, cx.sbp.o.f, dfs=list(df_f, df_f, df_f)) %>%
+  mutate("P-value" = sub("e(-\\d+)", "x10<sup>\\1</sup>", `P-value`, perl=T))   #html-version/proper exponents
+  #mutate("P-value" = sub("e(-\\d+)", "%*%10^{\\1}", `P-value`, perl=T))        #latex-version/proper exponents
+
+table.hr.m <- 
+  my_hr_table3_notitle(cx.sbp.m, cx.sbp.y.m, cx.sbp.o.m, dfs=list(df_m, df_m, df_m)) %>% 
+  select(-PRS) %>%
+  mutate("P-value" = sub("e(-\\d+)", "x10<sup>\\1</sup>", `P-value`, perl=T))   #html-version
+
+table.i.term <- 
+  my_hr_table3_notitle(cx.sbp.i, cx.sbp.y.i, cx.sbp.o.i, dfs=list(df, df, df), select=":SEX") %>% 
+  select(`P-value`) %>%
+  mutate("P-value" = sub("e(-\\d+)", "x10<sup>\\1</sup>", `P-value`, perl=T))   #html-version
+
+hr_table <- cbind(table.hr.f, table.hr.m, table.i.term) %>%
+  kable(format="html", escape = F) %>%
+  pack_rows("Early", 6, 10, bold=T) %>%
+  pack_rows("Late", 11, 15, bold=T) %>%
+  kable_classic_2() %>%
+  add_header_above(c(" ", "Women" = 3, "Men" = 3, "Interaction" = 1), bold=T) %>%
+  row_spec(0,bold=T) 
+
+hr_table %>% save_kable("hr_table_sex.html")
+hr_table
+
+```
+
+
+<details><summary>**All coefficients**</summary>
+
+
+```{r all coefs categorized score}
+
+summary(cx.sbp.f)
+summary(cx.sbp.m)
+
+summary(cx.sbp.y.f)
+summary(cx.sbp.y.m)
+
+summary(cx.sbp.o.f)
+summary(cx.sbp.o.m)
+
+
+```
+
+
+</details>
+<br>
+
+
+**Selecting covariates for plot**
+
+We used **mean** values for all numeric variables. For 'batch', we use the batch that has low significance for both data sets. AxiomGT1_b07_V2P2.calls
+
+<details><summary>**All coefficients**</summary>
+
+```{r select coefs for plot}
+summary(cx.sbp.f)$coefficients %>%
+  as.data.frame() %>%
+  mutate(name = row.names(.)) %>%
+  rename(pval="Pr(>|z|)") %>%
+  select("name", "coef", "exp(coef)","se(coef)", "pval") %>% 
+  arrange(pval)
+
+summary(cx.sbp.m)$coefficients %>%
+  as.data.frame() %>%
+  mutate(name = row.names(.)) %>%
+  rename(pval="Pr(>|z|)") %>%
+  select("name", "coef", "exp(coef)","se(coef)", "pval") %>%
+  arrange(pval)
+
+#Low significance for both datasets: AxiomGT1_b07_V2P2.calls
+ 
+```
+
+</details>
+<br>
+
+Low significance for both datasets: AxiomGT1_b07_V2P2.calls
+
+
+**Cox-plot adjusted, categorized**
+
+Creating covariate combinations for the plot.
+
+Female
+
+```{r fit cox plot female}
+
+df.sbp.f <- my_expand(cx.sbp.f, "SBP_CAT", df_f, batch = "AxiomGT1_b07_V2P2.calls")
+fit.sbp.f <- survfit(cx.sbp.f, newdata = df.sbp.f)
+
+```
+
+Male
+
+```{r fit cox plot male}
+
+df.sbp.m <- my_expand(cx.sbp.m, "SBP_CAT", df_m, batch = "AxiomGT1_b07_V2P2.calls")
+fit.sbp.m <- survfit(cx.sbp.m, newdata = df.sbp.m)
+
+```
+
+
+
+And the plot:
+
+```{r cox plot, fig.width=10, fig.height=4}
+
+#Female
+p1 <- my_ggcoxplot(fit.sbp.f, df.sbp.f, "Women", legend="none")
+
+#Male
+p2 <- my_ggcoxplot(fit.sbp.m, df.sbp.m, "Men", legend="none", ylab="")+
+theme(legend.position = c(0.2, 0.55))
+
+splots <- grid.arrange(p1, p2, nrow = 1, widths = c(3,3), top=textGrob("\n", x = 0.16, y=0.2, gp=gpar(fontsize=12)))
+ggsave(file = "cx_ht_prs_sex.png", plot = splots, height = 4, width = 8, dpi = 150)
+ggsave(file = "cx_ht_prs_sex.eps", device = cairo_ps, plot = splots, height = 4, width = 8, dpi = 150)
+
+#Purpose of top-parameter is to get image size same as in Figure 2; the title makes figure slightly smaller.
+
+#lgnd <-  my_ggcoxplot(fit.sbp.f, df.sbp.f, "", legend="right") %>%
+#         get_legend()
+
+#splots <- grid.arrange(p1, p2, lgnd, nrow = 1, widths = c(3,3,1))
+
+#ggsave(file = "cx_ht_prs_sex.png", plot = splots, height = 4, width = 10, dpi = 150)
+#ggsave(file = "cx_ht_prs.pdf", plot = splots, height = 4, width = 10, dpi = 150)
+#ggsave(file = "cx_ht_prs_sex.eps", device = cairo_ps, plot = splots, height = 4, width = 10, dpi = 150)
+
+```
+
+
+
+**Cox-plots by age**
+
+Creating covariate combinations for the plot.
+
+Young
+
+```{r fit cox plot female}
+
+df.sbp.y.f <- my_expand(cx.sbp.y.f, "SBP_CAT", df_f, batch = "AxiomGT1_b07_V2P2.calls")
+fit.sbp.y.f <- survfit(cx.sbp.y.f, newdata = df.sbp.y.f)
+
+df.sbp.y.m <- my_expand(cx.sbp.y.m, "SBP_CAT", df_m, batch = "AxiomGT1_b07_V2P2.calls")
+fit.sbp.y.m <- survfit(cx.sbp.y.m, newdata = df.sbp.y.m)
+
+
+```
+
+Old
+
+```{r fit cox plot male}
+
+df.sbp.o.f <- my_expand(cx.sbp.o.f, "SBP_CAT", df_f, batch = "AxiomGT1_b07_V2P2.calls")
+fit.sbp.o.f <- survfit(cx.sbp.o.f, newdata = df.sbp.o.f)
+
+df.sbp.o.m <- my_expand(cx.sbp.o.m, "SBP_CAT", df_m, batch = "AxiomGT1_b07_V2P2.calls")
+fit.sbp.o.m <- survfit(cx.sbp.o.m, newdata = df.sbp.o.m)
+
+```
+
+
+
+Plot by age
+
+```{r cox plot by age, fig.width=10, fig.height=10}
+
+#Young
+p1 <- my_ggcoxplot(fit.sbp.y.f, df.sbp.y.f, "Women", legend="none", xlim=c(0,60), ylim=c(0,0.4))
+p2 <- my_ggcoxplot(fit.sbp.y.m, df.sbp.y.m, "Men", legend="none", xlim=c(0,60), ylim=c(0,0.4), ylab="")+
+theme(legend.position = c(0.2, 0.55))
+splots.y <- grid.arrange(p1, p2, nrow = 1, widths = c(3,3), top=textGrob("\nA. Early-Onset Hypertension", x = 0.16, y=0.2, gp=gpar(fontsize=12)))
+
+
+#Old
+p1 <- my_ggcoxplot(fit.sbp.o.f, df.sbp.o.f, "Women", legend="none", xlim=c(50,80), ylim=c(0,0.8), break.time=10)
+p2 <- my_ggcoxplot(fit.sbp.o.m, df.sbp.o.m, "Men", legend="none", xlim=c(50,80), ylim=c(0,0.8), break.time=10, ylab="")
+splots.o <- grid.arrange(p1, p2, nrow = 1, widths = c(3,3), top=textGrob("\nB. Late-Onset Hypertension", x = 0.16, y=0.2, gp=gpar(fontsize=12)))
+
+#Combine young & old
+splots.age <- grid.arrange(splots.y, splots.o, nrow=2)
+ggsave(file = "cx_ht_prs_sex_age.png", plot = splots.age, height = 8, width = 8, dpi = 150)
+ggsave(file = "cx_ht_prs_sex_age.eps", device = cairo_ps, plot = splots.age, height = 8, width = 8, dpi = 150)
+
+#ggsave(file = "cx_ht_prs_sex_y.png", plot = splots.y, height = 4, width = 8, dpi = 150)
+#ggsave(file = "cx_ht_prs_sex.eps", device = cairo_ps, plot = splots, height = 4, width = 10, dpi = 150)
+
+```
+
+
+## Restricted mean survival times
+
+Pairwise statistics between reference risk (20-80% quantile) and each other quantile is are calculated. For this purpose we need separate dataframe for each statistic of interest. 
+
+
+**Creating dataframes for each cases:**
+
+
+```{r rmst dfs}
+
+q <- c("<2.5%", "2.5-20%", "80-97.5%", ">97.5%" )
+df.list.sbp.f  <-  lapply(q, my_extr_cats2, cat="SBP_CAT", df=df_f)
+df.list.sbp.m  <-  lapply(q, my_extr_cats2, cat="SBP_CAT", df=df_m)
+
+```
+
+
+**rmst2 is runned for all cases**
+
+Unadjusted analysis - with covariates R is slow and output of this package does not include mean ages for adjusted.
+
+```{r rmst model}
+
+#Unadjusted, this works:
+
+rmst0.sbp.f <- lapply(df.list.sbp.f, function(x) rmst2(x$I9_HYPTENS_AGE, x$I9_HYPTENS, x$CAT, tau=95))
+rmst0.sbp.m <- lapply(df.list.sbp.m, function(x) rmst2(x$I9_HYPTENS_AGE, x$I9_HYPTENS, x$CAT, tau=95))
+
+```
+
+
+**Results are extracted for the table**
+
+SBP for females and males
+
+```{r rmst tables}
+
+#Results extracted and collected to table
+
+rmst.table <- 
+  my_rmst_coefs(rmst0.sbp.f) %>%
+  bind_rows(my_rmst_coefs(rmst0.sbp.m)) %>%
+  my_tidy_table("0", 1) %>%
+  add_row(q="Women", est="", pval="", lower_mean=NA, upper_mean=NA, mean=NA,  .before = 1) %>%
+  add_row(q="", est="", pval="", lower_mean=NA, upper_mean=NA, mean=NA,  .before = 7) %>%
+  add_row(q="Men", est="", pval="", lower_mean=NA, upper_mean=NA, mean=NA, .before = 8)
+
+
+#rmst.table divided to two and formatted for forestplot
+
+rmst.means <- rmst.table %>%
+  select(mean, lower_mean, upper_mean) %>%
+  rename(lower = lower_mean, upper=upper_mean) %>%
+  add_row(mean=NA, lower=NA, upper=NA, .before = 1)
+
+rmst.text <- rmst.table %>%
+ select(q, est, pval) %>%
+  mutate(pval = sub("e(-\\d+)", "%*%10^{\\1}", pval, perl=T)) %>%     #to create proper exponents...
+  add_row(q=NA, est="Difference, Years (95% CI)", pval="P-value", .before = 1)
+
+#To create proper exponents... I need actual values as 'expression' and other lines as 'character'.
+#list format is needed to accomodate different datatypes; parse can convert character unlike 'as.expression'
+pvals <- lapply(rmst.text$pval, function(x) {ifelse(grepl("10",x), parse(text = x), x)})
+rmst.text.list <- list(as.list(rmst.text$q), as.list(rmst.text$est), pvals)     
+```
+
+
+
+**Forestplots**
+
+```{r rmst forestplot,fig.width=9, fig.height=5.5}
+
+setEPS()
+postscript(file = 'rmst_unadj_bysex.eps', width = 9, height = 4.5) 
+
+my_rmst_plot(rmst.text.list, rmst.means, 
+             clip=c(65,90), xticks = c(65, 70, 75,  80, 85), zero=65)
+dev.off()
+
+my_rmst_plot(rmst.text.list, rmst.means, 
+             clip=c(65,90), xticks = c(65, 70, 75,  80, 85), zero=65)
+
+```
+
+
+<details><summary>**Test: Only time differences shown**</summary>
+
+```{r rmst difference only model}
+#Let's test this too
+rmst.diffs <- 
+  my_rmst_coefs(rmst0.sbp.f) %>%
+  bind_rows(my_rmst_coefs(rmst0.sbp.m)) %>%
+  select(est, lower, upper) %>%
+  mutate_all(replace_na, 0) %>%
+  add_row(est=NA, lower=NA, upper=NA, .before = 1) %>%
+  add_row(est=NA, lower=NA, upper=NA, .before = 1) %>%
+  add_row(est=NA, lower=NA, upper=NA, .before = 8) %>%
+  add_row(est=NA, lower=NA, upper=NA, .before = 9) %>%
+  rename(mean=est) %>%
+  mutate_all(as.numeric)
+ 
+```
+
+
+
+And plot...
+
+
+```{r rmst difference only plot,fig.width=9, fig.height=5.5}
+
+setEPS()
+postscript(file = 'rmst_diffs_unadj_bysex.eps', width = 9, height = 4.5) 
+
+my_rmst_plot(rmst.text.list, rmst.diffs, 
+             clip=c(-11, 10), xticks = c(-10, -5, 0, 5, 10), zero=0,
+             xlab = "Age difference, years")
+
+dev.off()
+
+my_rmst_plot(rmst.text.list, rmst.diffs, 
+             clip=c(-11, 10), xticks = c(-10, -5, 0, 5, 10), zero=0,
+             xlab = "Age difference, years")
+
+
+```
+
+
+</details>
+<br>
+
+
+
+# BP PRSs and cardiovascular outcomes
+
+
+## Proportional hazard assumption: log log curve:
+
+
+**Model by survfit**
+
+
+```{r}
+
+#CHD
+km.sbp.chd.f <- survfit(Surv(I9_CHD_AGE, I9_CHD) ~ SBP_CAT, data=df_f)
+km.sbp.chd.m <- survfit(Surv(I9_CHD_AGE, I9_CHD) ~ SBP_CAT, data=df_m)
+
+```
+
+
+
+**log log curve:**
+
+
+```{r, fig.width=10, fig.height=8}
+
+cols= c("skyblue", "blue", "black", "red", "salmon")
+labels= c("<2.5%","2.5-20%","20-80%","80-97.5%",">97.5%")
+
+par(mfrow=c(1,2))
+
+plot(km.sbp.chd.f, fun="cloglog", xlim=c(40,100), main="SBP CHD female: log log", xlab="Age", col = cols)
+plot(km.sbp.chd.m, fun="cloglog", xlim=c(40,100), main="SBP CHD male: log log", xlab="Age", col = cols)
+
+par(mfrow=c(1,1))
+
+```
+
+
+## Cox model: covariate adjusted, continuous score
+
+
+**Running models**
+
+
+*Female*
+
+```{r female continuous by age}
+
+#All
+cx.sbp.chd.cs.f <- coxph(Surv(I9_CHD_AGE, I9_CHD) ~ SBP_SCALED + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df_f)
+
+#Young
+cx.sbp.chd.cs.y.f <- coxph(Surv(I9_CHD_AGE, CHD_EARLY) 
+                       ~ SBP_SCALED + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df_f)
+
+#Old
+cx.sbp.chd.cs.o.f <- coxph(Surv(I9_CHD_AGE, CHD_LATE) 
+                       ~ SBP_SCALED + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df_f)
+
+```
+
+*Male*
+
+```{r male continuous by age}
+
+#All
+cx.sbp.chd.cs.m <- coxph(Surv(I9_CHD_AGE, I9_CHD) ~ SBP_SCALED + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df_m)
+
+#Young
+cx.sbp.chd.cs.y.m <- coxph(Surv(I9_CHD_AGE, CHD_EARLY) 
+                       ~ SBP_SCALED + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df_m)
+
+#Old
+cx.sbp.chd.cs.o.m <- coxph(Surv(I9_CHD_AGE, CHD_LATE) 
+                       ~ SBP_SCALED + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df_m)
+
+```
+
+**Hazard ratios**
+
+
+```{r HRs continuous by age}
+
+my_hr_table_cont2(list(cx.sbp.chd.cs.f, cx.sbp.chd.cs.m, cx.sbp.chd.cs.y.f, cx.sbp.chd.cs.o.f, cx.sbp.chd.cs.y.m,  cx.sbp.chd.cs.o.m), 
+                  c("CHD female", "CHD male","CHD early female", "CHD late female", "CHD early male", "CHD late male")) %>%
+  kable()%>%
+  kable_styling(full_width =  F)
+
+
+```
+
+
+<br>
+
+<details><summary>**All coefficients**</summary>
+
+
+```{r}
+
+
+summary(cx.sbp.chd.cs.f)
+summary(cx.sbp.chd.cs.m)
+
+summary(cx.sbp.chd.cs.y.f)
+summary(cx.sbp.chd.cs.y.m)
+summary(cx.sbp.chd.cs.o.f)
+summary(cx.sbp.chd.cs.o.m)
+
+
+```
+
+
+</details>
+<br>
+
+
+
+**Interaction term**
+
+We will check if differences between genders is statistically different by examing the interaction term.
+
+
+```{r interactions continuous score}
+
+#All ages
+cx.sbp.chd.cs.i <- coxph(Surv(I9_CHD_AGE, I9_CHD) ~ SBP_SCALED*SEX_IMPUTED
+                  + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df_r)
+
+#Early
+cx.sbp.chd.cs.y.i <- coxph(Surv(I9_CHD_AGE, CHD_EARLY) ~ SBP_SCALED*SEX_IMPUTED
+                  + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df_r)
+
+#Late
+cx.sbp.chd.cs.o.i <- coxph(Surv(I9_CHD_AGE, CHD_LATE) ~ SBP_SCALED*SEX_IMPUTED
+                  + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df_r)
+
+
+rbind(my_extr_coef(cx.sbp.chd.cs.i, "All", ":SEX"), 
+        my_extr_coef(cx.sbp.chd.cs.y.i, "Early", ":SEX"),
+        my_extr_coef(cx.sbp.chd.cs.o.i, "Late", ":SEX")) %>%
+  my_tidy_table() %>%
+  kable(full_width =  F) %>%
+  kable_styling()
+
+```
+  
+
+
+## Cox model: covariate adjusted, categorized score
+
+
+
+## Cox model for CHD: covariate adjusted, categorized score
+
+We will run divide data by gender and by age
+
+
+**Running models**
+
+*Female*
+
+```{r model categorized score female}
+
+#All ages
+cx.sbp.chd.f <- coxph(Surv(I9_CHD_AGE, I9_CHD) ~ SBP_CAT 
+                  + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df_fr)
+
+#Young
+cx.sbp.chd.y.f <- coxph(Surv(I9_CHD_AGE, CHD_EARLY) ~ SBP_CAT 
+                    + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df_fr)
+
+#Old
+cx.sbp.chd.o.f <- coxph(Surv(I9_CHD_AGE, CHD_LATE) ~ SBP_CAT 
+                    + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df_fr)
+
+```
+
+*Male*
+
+```{r model categorized score male}
+#All ages
+cx.sbp.chd.m <- coxph(Surv(I9_CHD_AGE, I9_CHD) ~ SBP_CAT 
+                  + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df_mr)
+
+#Young
+cx.sbp.chd.y.m <- coxph(Surv(I9_CHD_AGE, CHD_EARLY) ~ SBP_CAT 
+                    + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df_mr)
+
+#Old
+cx.sbp.chd.o.m <- coxph(Surv(I9_CHD_AGE, CHD_LATE) ~ SBP_CAT 
+                    + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df_mr)
+
+```
+  
+
+**Interaction term**
+
+We will check if differences between genders is statistically different by examing the interaction term.
+
+
+```{r interaction categorized score}
+
+#All ages
+cx.sbp.chd.i <- coxph(Surv(I9_CHD_AGE, I9_CHD) ~ SBP_CAT*SEX_IMPUTED
+                  + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df_r)
+
+#All ages
+cx.sbp.chd.y.i <- coxph(Surv(I9_CHD_AGE, CHD_EARLY) ~ SBP_CAT*SEX_IMPUTED
+                  + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df_r)
+
+#All ages
+cx.sbp.chd.o.i <- coxph(Surv(I9_CHD_AGE, CHD_LATE) ~ SBP_CAT*SEX_IMPUTED
+                  + batch + BL_YEAR + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data=df_r)
+
+
+int_table.chd <- 
+  my_extr_coef(cx.sbp.chd.i, "", ":SEX") %>%
+  my_tidy_table() %>%
+  select(-name) %>%
+  kable() %>%
+  kable_styling(full_width =  F)
+
+```
+
+
+**Table: Hazard ratios:**
+
+
+```{r HRs categorized score}
+
+table.hr.chd.f <- 
+  my_hr_table3_notitle(cx.sbp.chd.f, cx.sbp.chd.y.f, cx.sbp.chd.o.f, dfs=list(df_f, df_f, df_f)) %>%
+  mutate("P-value" = sub("e(-\\d+)", "x10<sup>\\1</sup>", `P-value`, perl=T))   #html-version/proper exponents
+  #mutate("P-value" = sub("e(-\\d+)", "%*%10^{\\1}", `P-value`, perl=T))        #latex-version/proper exponents
+
+table.hr.chd.m <- 
+  my_hr_table3_notitle(cx.sbp.chd.m, cx.sbp.chd.y.m, cx.sbp.chd.o.m, dfs=list(df_m, df_m, df_m)) %>% 
+  select(-PRS) %>%
+  mutate("P-value" = sub("e(-\\d+)", "x10<sup>\\1</sup>", `P-value`, perl=T))   #html-version
+
+table.i.chd.term <- 
+  my_hr_table3_notitle(cx.sbp.chd.i, cx.sbp.chd.y.i, cx.sbp.chd.o.i, dfs=list(df, df, df), select=":SEX") %>% 
+  select(`P-value`) %>%
+  mutate("P-value" = sub("e(-\\d+)", "x10<sup>\\1</sup>", `P-value`, perl=T))   #html-version
+
+hr_table.chd <- cbind(table.hr.chd.f, table.hr.chd.m, table.i.chd.term) %>%
+  kable(format="html", escape = F) %>%
+  pack_rows("Early", 6, 10, bold=T) %>%
+  pack_rows("Late", 11, 15, bold=T) %>%
+  kable_classic_2() %>%
+  add_header_above(c(" ", "Women" = 3, "Men" = 3, "Interaction" = 1), bold=T) %>%
+  row_spec(0,bold=T) 
+
+hr_table.chd %>% save_kable("hr_table_sbpprs_chd_sex.html")
+hr_table.chd
+
+```
+
+
+<details><summary>**All coefficients**</summary>
+
+
+```{r all coefs categorized score}
+
+summary(cx.sbp.chd.f)
+summary(cx.sbp.chd.m)
+
+summary(cx.sbp.chd.y.f)
+summary(cx.sbp.chd.y.m)
+
+summary(cx.sbp.chd.o.f)
+summary(cx.sbp.chd.o.m)
+
+
+```
+
+
+</details>
+<br>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
