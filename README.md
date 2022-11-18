@@ -19,7 +19,7 @@ ht_prs_preg
 	├── prepare_ukb_for_pipeline.R		# Preprocess gwas summaries from ukb
 	├── prepare_ega_for_pipeline.R		# Preprocess gwas summaries obtained from collaborators
 	├── prs_preecl.json			# Inputs for the FinnGen PRS pipeline
-	├── prs_sandbox.wdl			# wdl-file for the FinnGen PRS pipeline
+	├── prs_sandbox.wdl			# wdl-file for the FinnGen PRS pipeline (from FinnGen)
 	├── PRS_data_preg3c.csv	  		# Metafile for the FinnGen PRS pipeline  
 	├── PRS_regions.txt			# Auxilliary file for the FinnGen PRS pipeline (essentially empty file)		
 
