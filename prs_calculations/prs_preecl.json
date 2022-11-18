@@ -1,0 +1,23 @@
+{
+
+    "sandbox_prs.test": false,
+    "sandbox_prs.gwas_data_path": "SANDBOX_RED/anni/pipeline_input/ht_prs_preg/",
+    "sandbox_prs.gwas_meta": "SANDBOX_RED/anni/pipeline_input/ht_prs_preg/PRS_data_preg3c.csv",
+
+     "sandbox_prs.rsid_map.bim_file": "LIBRARY_RED/finngen_R9/genotype_plink_1.0/data/finngen_R9.bim",
+     "sandbox_prs.scores.bed_file":   "LIBRARY_RED/finngen_R9/genotype_plink_1.0/data/finngen_R9_hm3.bed",
+
+     "sandbox_prs.scores.regions": "SANDBOX_RED/anni/pipeline_input/ht_prs_preg/PRS_regions.txt",
+     "sandbox_prs.rsid_map.hm3_rsids": "LIBRARY_GREEN/prs/hm3.rsids",
+     "sandbox_prs.weights.ref_list": "LIBRARY_GREEN/prs/ref_list.txt",
+
+     "sandbox_prs.weights.cpu": 16,
+     "sandbox_prs.scores.cpu": 16,
+
+     "sandbox_prs.chain_map":"LIBRARY_GREEN/prs/chains/chain_map.txt",
+     "sandbox_prs.rsid_map.vcf_gz": "LIBRARY_GREEN/prs/00-All.vcf.gz",
+     "sandbox_prs.docker": "eu.gcr.io/finngen-sandbox-v3-containers/cs-prs:r6.test"
+
+}
+
+

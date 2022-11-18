@@ -1,0 +1,3 @@
+filename	pheno	n_total	n_cases	n_ctrls	publication	ancestry	finngen_phenocode	effect_type	variant	chrom	pos	effect_allele	other_allele	effect	pval	build
+ega2.pe.gwas.tsv.gz	Preeclampsia	159029	9115	149914	https://pubmed.ncbi.nlm.nih.gov/33239696/	European_and_Central_Asian	O15_PREECLAMPS	BETA	MarkerName	Chromosome	Position	Allele1	Allele2	Effect	P-value	hg19
+ukb.sbp.female.gwas.tsv.gz	4080_irnt	182645	NA	NA	NA	European	NA	BETA	variant	chr	pos	alt	ref	beta	pval	hg19
