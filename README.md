@@ -14,7 +14,6 @@ ht_prs_preg
 ├── README.md                 	# Overview
 ├── ht_prs_preg_final.rmd     	# R markdown for the analysis
 ├── functions_article.R      	# Minor R functions for the main analysis
-├── select_columns.pl         	# Perl script to select columns from tsv files by column name
 ├── prs_calculations		# Directory: PRS calculations
 	├── prepare_ukb_for_pipeline.R		# Preprocess gwas summaries from ukb
 	├── prepare_ega_for_pipeline.R		# Preprocess gwas summaries obtained from collaborators
