@@ -13,8 +13,7 @@ https://doi.org/10.1097/HJH.0000000000003336
 ht_prs_preg
 ├── README.md                 	# Overview
 ├── ht_prs_preg_final.rmd     	# R markdown for the analysis
-├── ht_prs_preg_final.html    	# html generated from rmd file 'ht_prs_sex_final.rmd'
-├── articles-functions.R      	# Minor R functions for the main analysis
+├── functions_article.R      	# Minor R functions for the main analysis
 ├── select_columns.pl         	# Perl script to select columns from tsv files by column name
 ├── prs_calculations		# Directory: PRS calculations
 	├── prepare_ukb_for_pipeline.R		# Preprocess gwas summaries from ukb
