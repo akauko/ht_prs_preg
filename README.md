@@ -3,7 +3,11 @@ R code for the publication: Associations of polygenic risk scores for preeclamps
 with hypertensive disorders of pregnancy
 https://doi.org/10.1097/HJH.0000000000003336
 
-PRS values were calculuted using PRS-CS pipeline with default settings: https://github.com/getian107/PRScs. Calculations were performed at the FinnGen PRS pipeline: https://github.com/FINNGEN/CS-PRS-pipeline
+
+* PRS values were calculuted for FinnGen individuals using PRS-CS pipeline with default settings: https://github.com/getian107/PRScs
+* Calculations were performed at the FinnGen PRS pipeline: https://github.com/FINNGEN/CS-PRS-pipeline
+* BP GWAS summary from UKBB GWAS v3: https://docs.google.com/spreadsheets/d/1kvPoupSzsSFBNSztMzl04xMoSC3Kcx3CrjVf4yBmESU/edit#gid=227859291
+* Pree-eclampsia GWAS was based on https://doi.org/10.1038/s41467-020-19733-6, but without FINRISK individuals.
 
 ```
 ht_prs_preg
