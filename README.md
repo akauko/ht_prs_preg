@@ -1,5 +1,5 @@
 # ht_prs_preg
-R code for the publication: 
+Code for the publication: 
 Nurkkala, Jouko, et al. "Associations of polygenic risk scores for preeclampsia and blood pressure with hypertensive
 disorders of pregnancy." J. Hypertens. (2022) accepted.
 
