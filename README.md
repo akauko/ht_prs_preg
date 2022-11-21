@@ -1,6 +1,6 @@
 # ht_prs_preg
 Code for the publication: 
-Nurkkala, Jouko, et al. "Associations of polygenic risk scores for preeclampsia and blood pressure with hypertensive
+Nurkkala, J., et al. "Associations of polygenic risk scores for preeclampsia and blood pressure with hypertensive
 disorders of pregnancy." J. Hypertens. (2022) accepted.
 
 * Data: FinnGen https://www.finngen.fi/en
