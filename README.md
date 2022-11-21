@@ -1,8 +1,7 @@
 # ht_prs_preg
-R code for the publication: Associations of polygenic risk scores for preeclampsia and blood pressure
-with hypertensive disorders of pregnancy
-https://doi.org/10.1097/HJH.0000000000003336
-
+R code for the publication: 
+Nurkkala, Jouko, et al. "Associations of polygenic risk scores for preeclampsia and blood pressure with hypertensive
+disorders of pregnancy." J. Hypertens. (2022) accepted.
 
 * Data: FinnGen https://www.finngen.fi/en
 * PRS values were calculuted for FinnGen individuals using PRS-CS pipeline with default settings: https://github.com/getian107/PRScs
